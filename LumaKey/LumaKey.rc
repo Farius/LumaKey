@@ -1,0 +1,3 @@
+#include "resource.h"
+
+IDI_LUMAKEY_ICON ICON "lumakey_sun_line.ico"
