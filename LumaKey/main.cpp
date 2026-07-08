@@ -3,6 +3,7 @@
 #include <wbemidl.h>
 #include <comdef.h>
 #include <wtsapi32.h>
+#include <dwmapi.h>
 
 #include "resource.h"
 
@@ -21,6 +22,11 @@
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "wtsapi32.lib")
+#pragma comment(lib, "dwmapi.lib")
+
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
 
 namespace {
 
@@ -36,8 +42,13 @@ constexpr int kMenuExit = 2003;
 constexpr int kDefaultStep = 10;
 constexpr UINT_PTR kHotkeyWatchdogTimerId = 1;
 constexpr UINT kHotkeyWatchdogIntervalMs = 30000;
+constexpr wchar_t kOsdWindowClassName[] = L"LumaKeyOsdWindow";
+constexpr UINT_PTR kOsdHideTimerId = 1;
+constexpr UINT kOsdHideDelayMs = 3000;
 
 HWND g_hwnd = nullptr;
+HWND g_osdHwnd = nullptr;
+int g_osdBrightness = 0;
 NOTIFYICONDATAW g_nid{};
 UINT g_taskbarCreatedMessage = 0;
 int g_brightnessStep = kDefaultStep;
@@ -143,6 +154,14 @@ void ShowError(const std::wstring& message) {
     ShowTrayBalloon(L"LumaKey error", message, NIIF_ERROR);
 }
 
+void UpdateTrayTip(int brightness) {
+    const std::wstring tip = std::wstring(kTrayTip) + L" — " + std::to_wstring(brightness) + L"%";
+    wcsncpy_s(g_nid.szTip, tip.c_str(), _TRUNCATE);
+    NOTIFYICONDATAW nid = g_nid;
+    nid.uFlags = NIF_TIP;
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
 HICON LoadLumaKeyIcon(int width, int height) {
     HICON icon = reinterpret_cast<HICON>(
         LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_LUMAKEY_ICON),
@@ -160,6 +179,108 @@ std::wstring HResultText(HRESULT hr) {
 
 void LogHResult(const std::wstring& step, HRESULT hr) {
     LogLine(step + L": " + HResultText(hr));
+}
+
+int OsdScale(int value, UINT dpi) {
+    return MulDiv(value, static_cast<int>(dpi), 96);
+}
+
+void PaintOsd(HWND hwnd) {
+    PAINTSTRUCT ps{};
+    HDC hdc = BeginPaint(hwnd, &ps);
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    const UINT dpi = GetDpiForWindow(hwnd);
+
+    HBRUSH background = CreateSolidBrush(RGB(31, 31, 31));
+    FillRect(hdc, &rc, background);
+    DeleteObject(background);
+
+    HFONT font = CreateFontW(-OsdScale(15, dpi), 0, 0, 0, FW_SEMIBOLD,
+                             FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+                             L"Segoe UI");
+    HFONT oldFont = static_cast<HFONT>(SelectObject(hdc, font));
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(240, 240, 240));
+
+    const std::wstring text = L"Brightness  " + std::to_wstring(g_osdBrightness) + L"%";
+    RECT textRect = rc;
+    textRect.left += OsdScale(16, dpi);
+    textRect.top += OsdScale(10, dpi);
+    DrawTextW(hdc, text.c_str(), -1, &textRect, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+
+    RECT bar{};
+    bar.left = rc.left + OsdScale(16, dpi);
+    bar.right = rc.right - OsdScale(16, dpi);
+    bar.bottom = rc.bottom - OsdScale(14, dpi);
+    bar.top = bar.bottom - OsdScale(4, dpi);
+    HBRUSH track = CreateSolidBrush(RGB(72, 72, 72));
+    FillRect(hdc, &bar, track);
+    DeleteObject(track);
+
+    RECT fill = bar;
+    fill.right = bar.left + MulDiv(bar.right - bar.left, g_osdBrightness, 100);
+    HBRUSH fillBrush = CreateSolidBrush(RGB(255, 255, 255));
+    FillRect(hdc, &fill, fillBrush);
+    DeleteObject(fillBrush);
+
+    SelectObject(hdc, oldFont);
+    DeleteObject(font);
+    EndPaint(hwnd, &ps);
+}
+
+LRESULT CALLBACK OsdWindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    switch (msg) {
+    case WM_PAINT:
+        PaintOsd(hwnd);
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_TIMER:
+        if (wparam == kOsdHideTimerId) {
+            KillTimer(hwnd, kOsdHideTimerId);
+            ShowWindow(hwnd, SW_HIDE);
+            return 0;
+        }
+        break;
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+// Volume-OSD-style popup: updates in place on every press and hides
+// kOsdHideDelayMs after the last one. No toast notifications involved.
+void ShowBrightnessOsd(int brightness) {
+    if (!g_osdHwnd) {
+        g_osdHwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+                                    kOsdWindowClassName, L"", WS_POPUP,
+                                    0, 0, 0, 0, nullptr, nullptr,
+                                    GetModuleHandleW(nullptr), nullptr);
+        if (!g_osdHwnd) {
+            LogLine(L"Failed to create OSD window: " + GetLastErrorText());
+            return;
+        }
+        SetLayeredWindowAttributes(g_osdHwnd, 0, 235, LWA_ALPHA);
+        const DWORD cornerPreference = 2; // DWMWCP_ROUND, ignored before Windows 11
+        DwmSetWindowAttribute(g_osdHwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+                              &cornerPreference, sizeof(cornerPreference));
+    }
+
+    g_osdBrightness = std::clamp(brightness, 0, 100);
+
+    const UINT dpi = GetDpiForWindow(g_osdHwnd);
+    const int width = OsdScale(220, dpi);
+    const int height = OsdScale(64, dpi);
+    RECT work{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    const int x = work.left + (work.right - work.left - width) / 2;
+    const int y = work.bottom - height - OsdScale(24, dpi);
+
+    SetWindowPos(g_osdHwnd, HWND_TOPMOST, x, y, width, height,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    InvalidateRect(g_osdHwnd, nullptr, TRUE);
+    SetTimer(g_osdHwnd, kOsdHideTimerId, kOsdHideDelayMs, nullptr);
 }
 
 class WmiBrightnessController {
@@ -448,7 +569,8 @@ void AdjustBrightness(int delta) {
         return;
     }
 
-    ShowTrayBalloon(L"LumaKey", L"Brightness: " + std::to_wstring(next) + L"%", NIIF_INFO);
+    ShowBrightnessOsd(next);
+    UpdateTrayTip(next);
 }
 
 void AddTrayIcon(HWND hwnd) {
@@ -585,6 +707,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         KillTimer(hwnd, kHotkeyWatchdogTimerId);
         WTSUnRegisterSessionNotification(hwnd);
         UnregisterBrightnessHotkeys(hwnd);
+        if (g_osdHwnd) {
+            DestroyWindow(g_osdHwnd);
+            g_osdHwnd = nullptr;
+        }
         RemoveTrayIcon();
         PostQuitMessage(0);
         return 0;
@@ -623,6 +749,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
 
     if (!RegisterClassW(&wc)) {
         LogLine(L"Failed to register window class: " + GetLastErrorText());
+        CoUninitialize();
+        return 1;
+    }
+
+    WNDCLASSW osdWc{};
+    osdWc.lpfnWndProc = OsdWindowProc;
+    osdWc.hInstance = instance;
+    osdWc.lpszClassName = kOsdWindowClassName;
+    osdWc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    if (!RegisterClassW(&osdWc)) {
+        LogLine(L"Failed to register OSD window class: " + GetLastErrorText());
         CoUninitialize();
         return 1;
     }
