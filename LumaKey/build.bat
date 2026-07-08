@@ -20,6 +20,7 @@ cl ^
   user32.lib ^
   gdi32.lib ^
   advapi32.lib ^
+  wtsapi32.lib ^
   /Fe:LumaKey.exe ^
   /link /SUBSYSTEM:WINDOWS
 

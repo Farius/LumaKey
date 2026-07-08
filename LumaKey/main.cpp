@@ -2,6 +2,7 @@
 #include <shellapi.h>
 #include <wbemidl.h>
 #include <comdef.h>
+#include <wtsapi32.h>
 
 #include "resource.h"
 
@@ -19,6 +20,7 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "wtsapi32.lib")
 
 namespace {
 
@@ -32,9 +34,12 @@ constexpr int kMenuBrightnessUp = 2001;
 constexpr int kMenuBrightnessDown = 2002;
 constexpr int kMenuExit = 2003;
 constexpr int kDefaultStep = 10;
+constexpr UINT_PTR kHotkeyWatchdogTimerId = 1;
+constexpr UINT kHotkeyWatchdogIntervalMs = 30000;
 
 HWND g_hwnd = nullptr;
 NOTIFYICONDATAW g_nid{};
+UINT g_taskbarCreatedMessage = 0;
 int g_brightnessStep = kDefaultStep;
 std::wstring g_exeDir;
 std::wstring g_settingsPath;
@@ -496,12 +501,57 @@ void UnregisterBrightnessHotkeys(HWND hwnd) {
     UnregisterHotKey(hwnd, kHotkeyBrightnessDown);
 }
 
+// Hotkey registrations can become stale after sleep/resume or session
+// lock/unlock. Force a fresh registration when those events arrive.
+void ReRegisterBrightnessHotkeys(HWND hwnd, const wchar_t* reason) {
+    LogLine(std::wstring(L"Re-registering hotkeys: ") + reason);
+    UnregisterBrightnessHotkeys(hwnd);
+    RegisterBrightnessHotkeys(hwnd);
+}
+
+// Non-destructive periodic check: RegisterHotKey fails with
+// ERROR_HOTKEY_ALREADY_REGISTERED while our registration is still alive,
+// so a success here means the registration had been lost and is now back.
+void WatchdogCheckHotkeys(HWND hwnd) {
+    if (RegisterHotKey(hwnd, kHotkeyBrightnessUp, MOD_WIN | MOD_SHIFT, VK_OEM_6)) {
+        LogLine(L"Watchdog restored Win+Shift+] hotkey");
+    }
+    if (RegisterHotKey(hwnd, kHotkeyBrightnessDown, MOD_WIN | MOD_SHIFT, VK_OEM_4)) {
+        LogLine(L"Watchdog restored Win+Shift+[ hotkey");
+    }
+}
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    if (msg == g_taskbarCreatedMessage && g_taskbarCreatedMessage != 0) {
+        // Explorer restarted: the previous tray icon is gone, add it again.
+        LogLine(L"TaskbarCreated received, restoring tray icon");
+        AddTrayIcon(hwnd);
+        return 0;
+    }
+
     switch (msg) {
     case WM_CREATE:
         AddTrayIcon(hwnd);
         RegisterBrightnessHotkeys(hwnd);
+        WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
+        SetTimer(hwnd, kHotkeyWatchdogTimerId, kHotkeyWatchdogIntervalMs, nullptr);
         return 0;
+    case WM_POWERBROADCAST:
+        if (wparam == PBT_APMRESUMEAUTOMATIC || wparam == PBT_APMRESUMESUSPEND) {
+            ReRegisterBrightnessHotkeys(hwnd, L"resume from sleep");
+        }
+        return TRUE;
+    case WM_WTSSESSION_CHANGE:
+        if (wparam == WTS_SESSION_UNLOCK || wparam == WTS_SESSION_LOGON) {
+            ReRegisterBrightnessHotkeys(hwnd, L"session unlock");
+        }
+        return 0;
+    case WM_TIMER:
+        if (wparam == kHotkeyWatchdogTimerId) {
+            WatchdogCheckHotkeys(hwnd);
+            return 0;
+        }
+        break;
     case WM_COMMAND:
         switch (LOWORD(wparam)) {
         case kMenuBrightnessUp:
@@ -532,6 +582,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         }
         break;
     case WM_DESTROY:
+        KillTimer(hwnd, kHotkeyWatchdogTimerId);
+        WTSUnRegisterSessionNotification(hwnd);
         UnregisterBrightnessHotkeys(hwnd);
         RemoveTrayIcon();
         PostQuitMessage(0);
@@ -575,8 +627,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         return 1;
     }
 
-    g_hwnd = CreateWindowExW(0, kWindowClassName, L"LumaKey", 0,
-                             0, 0, 0, 0, HWND_MESSAGE,
+    // Broadcast messages (WM_POWERBROADCAST, TaskbarCreated) never reach
+    // message-only windows, so use an invisible top-level window instead.
+    g_taskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
+    g_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, kWindowClassName, L"LumaKey",
+                             WS_OVERLAPPED, 0, 0, 0, 0, nullptr,
                              nullptr, instance, nullptr);
     if (!g_hwnd) {
         LogLine(L"Failed to create hidden window: " + GetLastErrorText());
