@@ -7,10 +7,10 @@ import IOKit
 private let kDefaultStepPercent = 10
 private let kOsdHideDelay: TimeInterval = 3.0
 
-// Ctrl+Shift+] = brightness up, Ctrl+Shift+[ = brightness down.
-// Cmd+Shift+[ / ] would shadow the standard tab-switching shortcuts in
-// browsers and editors, so Control is used instead of Command here.
-private let kHotkeyModifiers = UInt32(controlKey | shiftKey)
+// Option+Shift+] = brightness up, Option+Shift+[ = brightness down.
+// One-hand friendly; Cmd+Shift+[ / ] would shadow the standard
+// tab-switching shortcuts in browsers and editors.
+private let kHotkeyModifiers = UInt32(optionKey | shiftKey)
 private let kHotkeyUpKey = UInt32(kVK_ANSI_RightBracket)
 private let kHotkeyDownKey = UInt32(kVK_ANSI_LeftBracket)
 
@@ -320,13 +320,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                            EventHotKeyID(signature: kHotkeySignature, id: kHotkeyUpId),
                                            GetEventDispatcherTarget(), 0, &hotKeyUp)
         if upStatus != noErr {
-            logLine("RegisterEventHotKey Ctrl+Shift+] failed: \(upStatus)")
+            logLine("RegisterEventHotKey Option+Shift+] failed: \(upStatus)")
         }
         let downStatus = RegisterEventHotKey(kHotkeyDownKey, kHotkeyModifiers,
                                              EventHotKeyID(signature: kHotkeySignature, id: kHotkeyDownId),
                                              GetEventDispatcherTarget(), 0, &hotKeyDown)
         if downStatus != noErr {
-            logLine("RegisterEventHotKey Ctrl+Shift+[ failed: \(downStatus)")
+            logLine("RegisterEventHotKey Option+Shift+[ failed: \(downStatus)")
         }
     }
 }

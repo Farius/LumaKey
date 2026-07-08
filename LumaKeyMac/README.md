@@ -6,13 +6,13 @@ and shows a bottom-center OSD popup, mirroring the Windows version.
 
 ## Hotkeys
 
-- `Ctrl + Shift + ]` = brightness up
-- `Ctrl + Shift + [` = brightness down
+- `Option + Shift + ]` = brightness up
+- `Option + Shift + [` = brightness down
 
-`Cmd + Shift + [ / ]` is deliberately not used: a global hotkey would shadow
-the standard tab-switching shortcuts in browsers and editors. To change the
-combo, edit the `kHotkeyModifiers` / `kHotkeyUpKey` / `kHotkeyDownKey`
-constants at the top of `main.swift`.
+One-hand friendly. `Cmd + Shift + [ / ]` is deliberately not used: a global
+hotkey would shadow the standard tab-switching shortcuts in browsers and
+editors. To change the combo, edit the `kHotkeyModifiers` / `kHotkeyUpKey` /
+`kHotkeyDownKey` constants at the top of `main.swift`.
 
 The same actions are also available from the menu bar icon (sun symbol):
 `Brightness +`, `Brightness −`, `Quit LumaKey`.
