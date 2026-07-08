@@ -2,3 +2,5 @@ LumaKey/*.exe
 LumaKey/*.obj
 LumaKey/*.res
 LumaKey/*.log
+LumaKeyMac/LumaKey
+LumaKeyMac/*.log
