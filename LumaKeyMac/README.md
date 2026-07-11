@@ -63,4 +63,54 @@ External monitors are not supported (same limitation as the Windows version).
 
 ## Autostart
 
-System Preferences → Users & Groups → Login Items → add the `LumaKey` binary.
+Simplest way: System Preferences → Users & Groups → Login Items → add the
+`LumaKey` binary.
+
+Alternatively, a user LaunchAgent starts it in the first seconds after login
+(this is the earliest possible start for a menu bar app — it needs the user's
+GUI session, so a pre-login LaunchDaemon is not an option). First copy the
+binary to a stable location outside the source tree, since `settings.ini` and
+`LumaKey.log` are written next to it:
+
+```sh
+mkdir -p ~/Applications/LumaKey
+cp LumaKey ~/Applications/LumaKey/
+```
+
+Then save this as `~/Library/LaunchAgents/com.lumakey.plist` (adjust the
+paths to your username):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.lumakey</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOU/Applications/LumaKey/LumaKey</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>WorkingDirectory</key>
+    <string>/Users/YOU/Applications/LumaKey</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>
+```
+
+Load it (also starts the app immediately):
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lumakey.plist
+```
+
+`KeepAlive` is deliberately not set, so `Quit LumaKey` from the menu quits it
+until the next login instead of respawning it. To remove the autostart:
+
+```sh
+launchctl bootout gui/$(id -u)/com.lumakey
+rm ~/Library/LaunchAgents/com.lumakey.plist
+```
